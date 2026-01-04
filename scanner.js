@@ -7,7 +7,7 @@ import {
   getProjectDisplayLabel,
   isSkippableDirName,
   isRelevantDir,
-} from './utils.js';
+} from './lib/utils.js';
 
 function _enumerateChildrenAsync(file, cancellable) {
   return new Promise((resolve, reject) => {

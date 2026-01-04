@@ -5,7 +5,7 @@ import {
   findToolboxScript,
   ideCmdForKey,
   shSingleQuote,
-} from './utils.js';
+} from './lib/utils.js';
 
 export function launchProject(projectPath, ideKey, notifyError) {
   const cmd = ideCmdForKey(ideKey);

@@ -5,7 +5,7 @@ import GLib from 'gi://GLib';
 
 import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
-import {getProjectDisplayLabel, normalizeIgnoredProjects} from './utils.js';
+import {getProjectDisplayLabel, normalizeIgnoredProjects} from './lib/utils.js';
 import {createCancellable, scanForIdeaProjectsAsync} from './scanner.js';
 
 export default class CodeLauncherPrefs extends ExtensionPreferences {

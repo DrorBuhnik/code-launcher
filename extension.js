@@ -15,7 +15,7 @@ import {
   getProjectDisplayMarkup,
   normalizeIgnoredProjects,
   pickIdeForProject,
-} from './utils.js';
+} from './lib/utils.js';
 
 import {createCancellable, scanForIdeaProjectsAsync} from './scanner.js';
 import {launchProject} from './launcher.js';
