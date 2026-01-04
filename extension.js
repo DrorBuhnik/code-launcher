@@ -189,13 +189,45 @@ function _launchProject(projectPath, ideKey) {
 
 function _scanForIdeaProjects(rootPath) {
   const root = Gio.File.new_for_path(rootPath);
-  const projects = [];
+
+  // Use a Set to avoid duplicates (symlinks, multiple discovery paths, etc.)
+  const projectsSet = new Set();
   const stack = [{ file: root, depth: 0 }];
+
+  const isSkippableDirName = (name) =>
+      name === 'node_modules' ||
+      name === '.git' ||
+      name === '.hg' ||
+      name === '.svn' ||
+      name === '.cache';
+
+  const isRelevantDir = (dirFile) => {
+    // A “relevant” directory is one that looks like a repo / IDE project root.
+    // Once we find one, we add it and DO NOT search deeper under it.
+    const markers = ['.idea', '.git', '.hg', '.svn'];
+    for (const marker of markers) {
+      try {
+        if (dirFile.get_child(marker).query_exists(null))
+          return true;
+      } catch { }
+    }
+    return false;
+  };
 
   while (stack.length > 0) {
     const { file, depth } = stack.pop();
     if (depth > SCAN_LIMIT_DEPTH) continue;
-    if (projects.length >= SCAN_LIMIT_PROJECTS) break;
+    if (projectsSet.size >= SCAN_LIMIT_PROJECTS) break;
+
+    // If this directory is itself a repo/project root, record it and stop.
+    try {
+      if (isRelevantDir(file)) {
+        const p = file.get_path();
+        if (p)
+          projectsSet.add(p);
+        continue;
+      }
+    } catch { }
 
     let enumerator = null;
     try {
@@ -213,16 +245,16 @@ function _scanForIdeaProjects(rootPath) {
       const name = info.get_name();
       const type = info.get_file_type();
       if (type !== Gio.FileType.DIRECTORY) continue;
-
-      if (name === 'node_modules' || name === '.git' || name === '.cache')
-        continue;
+      if (isSkippableDirName(name)) continue;
 
       const child = file.get_child(name);
 
-      const ideaDir = child.get_child('.idea');
+      // If the child is relevant, add it and do NOT descend into it.
       try {
-        if (ideaDir.query_exists(null)) {
-          projects.push(child.get_path());
+        if (isRelevantDir(child)) {
+          const p = child.get_path();
+          if (p)
+            projectsSet.add(p);
           continue;
         }
       } catch { }
@@ -232,6 +264,8 @@ function _scanForIdeaProjects(rootPath) {
 
     try { enumerator.close(null); } catch { }
   }
+
+  const projects = [...projectsSet];
 
   // Sort by parent/project (case-insensitive)
   projects.sort((a, b) => {
