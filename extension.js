@@ -2,6 +2,7 @@ import St from 'gi://St';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
+import Clutter from 'gi://Clutter';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
@@ -107,7 +108,6 @@ function _getProjectDisplayLabel(projectPath) {
 }
 
 function _escapeMarkup(s) {
-  // Minimal Pango markup escaping
   return String(s)
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
@@ -120,8 +120,6 @@ function _getProjectDisplayMarkup(projectPath) {
   const { parentName, projectName } = _getProjectParts(projectPath);
   const p = _escapeMarkup(parentName);
   const n = _escapeMarkup(projectName);
-
-  // Dim the parent part (and the slash) while keeping the project name normal
   return `<span alpha="55%">${p}/</span>${n}`;
 }
 
@@ -151,7 +149,8 @@ function _getMenuIconForProject(projectPath, ideKey) {
   if (toolboxIcon)
     return toolboxIcon;
 
-  return new Gio.ThemedIcon({ name: 'applications-development-symbolic' });
+  // Safer than `new Gio.ThemedIcon({ name: ... })` across setups
+  return Gio.ThemedIcon.new('applications-development-symbolic');
 }
 
 // Escape for single-quoted POSIX shell string.
@@ -180,7 +179,9 @@ function _launchProject(projectPath, ideKey) {
       argv: ['/bin/sh', '-lc', shellLine],
       flags: Gio.SubprocessFlags.NONE,
     });
-    p.init(null);
+    // In modern GJS, construction already initializes; init() is not needed.
+    // Keeping it out avoids odd runtime differences.
+    p.spawn_async?.(null);
   } catch (e) {
     log(`[Code Launcher] Failed to launch: ${e}`);
     Main.notifyError('Code Launcher', `Failed to launch ${cmd}: ${e}`);
@@ -190,20 +191,17 @@ function _launchProject(projectPath, ideKey) {
 function _scanForIdeaProjects(rootPath) {
   const root = Gio.File.new_for_path(rootPath);
 
-  // Use a Set to avoid duplicates (symlinks, multiple discovery paths, etc.)
   const projectsSet = new Set();
   const stack = [{ file: root, depth: 0 }];
 
   const isSkippableDirName = (name) =>
-      name === 'node_modules' ||
-      name === '.git' ||
-      name === '.hg' ||
-      name === '.svn' ||
-      name === '.cache';
+    name === 'node_modules' ||
+    name === '.git' ||
+    name === '.hg' ||
+    name === '.svn' ||
+    name === '.cache';
 
   const isRelevantDir = (dirFile) => {
-    // A “relevant” directory is one that looks like a repo / IDE project root.
-    // Once we find one, we add it and DO NOT search deeper under it.
     const markers = ['.idea', '.git', '.hg', '.svn'];
     for (const marker of markers) {
       try {
@@ -219,7 +217,6 @@ function _scanForIdeaProjects(rootPath) {
     if (depth > SCAN_LIMIT_DEPTH) continue;
     if (projectsSet.size >= SCAN_LIMIT_PROJECTS) break;
 
-    // If this directory is itself a repo/project root, record it and stop.
     try {
       if (isRelevantDir(file)) {
         const p = file.get_path();
@@ -249,7 +246,6 @@ function _scanForIdeaProjects(rootPath) {
 
       const child = file.get_child(name);
 
-      // If the child is relevant, add it and do NOT descend into it.
       try {
         if (isRelevantDir(child)) {
           const p = child.get_path();
@@ -267,7 +263,6 @@ function _scanForIdeaProjects(rootPath) {
 
   const projects = [...projectsSet];
 
-  // Sort by parent/project (case-insensitive)
   projects.sort((a, b) => {
     const ka = _getProjectDisplayLabel(a).toLowerCase();
     const kb = _getProjectDisplayLabel(b).toLowerCase();
@@ -294,15 +289,6 @@ const CodeLauncherIndicator = GObject.registerClass(
         style_class: 'system-status-icon',
       });
       this.add_child(this._panelIcon);
-
-      // const Me = Extension.lookupByURL(import.meta.url);
-      // this._panelIcon = new St.Icon({
-      //   gicon: new Gio.FileIcon({ file: Me.dir.get_child('icons').get_child('code-launcher-symbolic.svg') }),
-      //   style_class: 'system-status-icon',
-      // });
-
-      // this.add_child(this._panelIcon);
-
 
       // Search row
       const searchItem = new PopupMenu.PopupBaseMenuItem({
@@ -333,11 +319,9 @@ const CodeLauncherIndicator = GObject.registerClass(
         if (!isOpen)
           return;
 
-        // Defer focus to the next main loop tick so the entry is realized
         GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
           try {
             this._searchEntry.grab_key_focus();
-            // Select all existing text to allow quick overwrite
             this._searchEntry.clutter_text.set_selection(0, -1);
           } catch (e) {
             log(`[Code Launcher] Failed to focus search entry: ${e}`);
@@ -372,7 +356,6 @@ const CodeLauncherIndicator = GObject.registerClass(
       rescanItem.connect('activate', () => {
         this._refreshNow(true);
 
-        // Re-open after GNOME closes it (next tick), then focus search.
         GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
           this.menu.open();
           try {
@@ -384,10 +367,7 @@ const CodeLauncherIndicator = GObject.registerClass(
           return GLib.SOURCE_REMOVE;
         });
       });
-
       this.menu.addMenuItem(rescanItem);
-
-
 
       const openPrefsItem = new PopupMenu.PopupMenuItem('Settings…');
       openPrefsItem.connect('activate', () => {
@@ -399,7 +379,8 @@ const CodeLauncherIndicator = GObject.registerClass(
       });
       this.menu.addMenuItem(openPrefsItem);
 
-      this._settingsChangedId = this._settings.connect('changed', () => {
+      // Only rescan when scan-directory changes
+      this._scanDirChangedId = this._settings.connect('changed::scan-directory', () => {
         this._allProjects = [];
         this._hasScannedOnce = false;
         this._searchText = '';
@@ -407,15 +388,48 @@ const CodeLauncherIndicator = GObject.registerClass(
         this._showNeedsRescan();
       });
 
+      // Only refresh list when ignored-projects changes
+      this._ignoredChangedId = this._settings.connect('changed::ignored-projects', () => {
+        this._rebuildProjectItems();
+      });
+
       this._refreshNow(false);
     }
 
     destroy() {
-      if (this._settingsChangedId) {
-        this._settings.disconnect(this._settingsChangedId);
-        this._settingsChangedId = 0;
+      if (this._scanDirChangedId) {
+        this._settings.disconnect(this._scanDirChangedId);
+        this._scanDirChangedId = 0;
+      }
+      if (this._ignoredChangedId) {
+        this._settings.disconnect(this._ignoredChangedId);
+        this._ignoredChangedId = 0;
       }
       super.destroy();
+    }
+
+    _getIgnoredSet() {
+      try {
+        const arr = this._settings.get_strv('ignored-projects') ?? [];
+        return new Set(arr.map(s => String(s).trim()).filter(Boolean));
+      } catch {
+        return new Set();
+      }
+    }
+
+    _setIgnoredSet(set) {
+      try {
+        const arr = [...set].map(s => String(s).trim()).filter(Boolean);
+        this._settings.set_strv('ignored-projects', arr);
+      } catch (e) {
+        log(`[Code Launcher] Failed to write ignored-projects (missing schema key?): ${e}`);
+      }
+    }
+
+    _ignoreProject(projectPath) {
+      const set = this._getIgnoredSet();
+      set.add(projectPath);
+      this._setIgnoredSet(set);
     }
 
     _showSingleDisabledLine(text) {
@@ -443,18 +457,21 @@ const CodeLauncherIndicator = GObject.registerClass(
         return;
       }
 
-      if (this._allProjects.length === 0) {
-        this._showSingleDisabledLine('No .idea projects found');
+      const ignored = this._getIgnoredSet();
+      const visibleProjects = this._allProjects.filter(p => !ignored.has(p));
+
+      if (visibleProjects.length === 0) {
+        this._showSingleDisabledLine('No projects (or all are ignored)');
         return;
       }
 
       const q = this._searchText;
       const filtered = q
-        ? this._allProjects.filter(p => {
+        ? visibleProjects.filter(p => {
           const label = _getProjectDisplayLabel(p).toLowerCase();
           return label.includes(q) || p.toLowerCase().includes(q);
         })
-        : this._allProjects;
+        : visibleProjects;
 
       if (filtered.length === 0) {
         this._showSingleDisabledLine('No matches');
@@ -470,26 +487,30 @@ const CodeLauncherIndicator = GObject.registerClass(
 
         const menuItem = new PopupMenu.PopupImageMenuItem(plainLabel, icon);
 
-        // Apply markup to dim the parent part
+        // Style hook for hover CSS
+        try {
+          menuItem.actor.add_style_class_name('project-item');
+          menuItem.actor.x_expand = true;
+        } catch { }
+
+        // Apply markup to dim parent part
         try {
           menuItem.label.clutter_text.set_markup(markupLabel);
         } catch (e) {
-          // Fallback to plain text if markup fails
           menuItem.label.set_text(plainLabel);
           log(`[Code Launcher] Failed to set markup label: ${e}`);
         }
 
-          // Close the menu when launching a project.
-          // Do it on an idle callback so launch isn't interrupted by menu teardown.
-          // (Rescan now keeps its special workaround: closeOnActivate=false + reopen.)
-          menuItem.closeOnActivate = true;
-          menuItem.connect('activate', () => {
-              _launchProject(projectPath, ideKey);
-              GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
-                  this.menu.close();
-                  return GLib.SOURCE_REMOVE;
-              });
+        // Launch on activate
+        menuItem.closeOnActivate = true;
+        menuItem.connect('activate', () => {
+          _launchProject(projectPath, ideKey);
+          GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+            this.menu.close();
+            return GLib.SOURCE_REMOVE;
           });
+        });
+
         this._projectsSection.addMenuItem(menuItem);
       }
     }
@@ -530,6 +551,16 @@ export default class CodeLauncherExtension extends Extension {
   enable() {
     this._settings = this.getSettings();
 
+    // Load stylesheet.css (GNOME 49+ safe)
+    this._stylesheetFile = Gio.File.new_for_path(`${this.path}/stylesheet.css`);
+    try {
+      St.ThemeContext.get_for_stage(global.stage)
+        .get_theme()
+        .load_stylesheet(this._stylesheetFile);
+    } catch (e) {
+      log(`[Code Launcher] Failed to load stylesheet: ${e}`);
+    }
+
     const place = () => {
       const index = Math.max(0, this._settings.get_int('panel-index') || 0);
 
@@ -539,17 +570,25 @@ export default class CodeLauncherExtension extends Extension {
       }
 
       this._indicator = new CodeLauncherIndicator(this);
-
-      // Always on the right
       Main.panel.addToStatusArea(this.uuid, this._indicator, index, 'right');
     };
 
     place();
-
     this._panelIndexChangedId = this._settings.connect('changed::panel-index', place);
   }
 
   disable() {
+    if (this._stylesheetFile) {
+      try {
+        St.ThemeContext.get_for_stage(global.stage)
+          .get_theme()
+          .unload_stylesheet(this._stylesheetFile);
+      } catch (e) {
+        log(`[Code Launcher] Failed to unload stylesheet: ${e}`);
+      }
+      this._stylesheetFile = null;
+    }
+
     if (this._panelIndexChangedId) {
       this._settings.disconnect(this._panelIndexChangedId);
       this._panelIndexChangedId = 0;

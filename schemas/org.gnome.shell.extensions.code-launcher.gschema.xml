@@ -15,5 +15,11 @@
       <description>Position inside the right panel box (0 = first).</description>
     </key>
 
+    <key name="ignored-projects" type="as">
+      <default>[]</default>
+      <summary>Ignored projects</summary>
+      <description>Project paths that should be hidden from the menu (and can be managed in Settings).</description>
+    </key>
+
   </schema>
 </schemalist>
