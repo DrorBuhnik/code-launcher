@@ -479,7 +479,17 @@ const CodeLauncherIndicator = GObject.registerClass(
           log(`[Code Launcher] Failed to set markup label: ${e}`);
         }
 
-        menuItem.connect('activate', () => _launchProject(projectPath, ideKey));
+          // Close the menu when launching a project.
+          // Do it on an idle callback so launch isn't interrupted by menu teardown.
+          // (Rescan now keeps its special workaround: closeOnActivate=false + reopen.)
+          menuItem.closeOnActivate = true;
+          menuItem.connect('activate', () => {
+              _launchProject(projectPath, ideKey);
+              GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                  this.menu.close();
+                  return GLib.SOURCE_REMOVE;
+              });
+          });
         this._projectsSection.addMenuItem(menuItem);
       }
     }
