@@ -5,101 +5,9 @@ import GLib from 'gi://GLib';
 
 import { ExtensionPreferences } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
-// Keep this in sync with extension.js
-const SCAN_LIMIT_PROJECTS = 5000;
-const SCAN_LIMIT_DEPTH = 50;
+import { getProjectDisplayLabel, normalizeIgnoredProjects } from './utils.js';
+import { createCancellable, scanForIdeaProjectsAsync } from './scanner.js';
 
-function _join(...parts) {
-  return GLib.build_filenamev(parts);
-}
-
-function _scanForIdeaProjects(rootPath) {
-  const root = Gio.File.new_for_path(rootPath);
-
-  const projectsSet = new Set();
-  const stack = [{ file: root, depth: 0 }];
-
-  const isSkippableDirName = (name) =>
-    name === 'node_modules' ||
-    name === '.git' ||
-    name === '.hg' ||
-    name === '.svn' ||
-    name === '.cache';
-
-  const isRelevantDir = (dirFile) => {
-    const markers = ['.idea', '.git', '.hg', '.svn'];
-    for (const marker of markers) {
-      try {
-        if (dirFile.get_child(marker).query_exists(null))
-          return true;
-      } catch { }
-    }
-    return false;
-  };
-
-  while (stack.length > 0) {
-    const { file, depth } = stack.pop();
-    if (depth > SCAN_LIMIT_DEPTH) continue;
-    if (projectsSet.size >= SCAN_LIMIT_PROJECTS) break;
-
-    try {
-      if (isRelevantDir(file)) {
-        const p = file.get_path();
-        if (p)
-          projectsSet.add(p);
-        continue;
-      }
-    } catch { }
-
-    let enumerator = null;
-    try {
-      enumerator = file.enumerate_children(
-        'standard::name,standard::type',
-        Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS,
-        null
-      );
-    } catch {
-      continue;
-    }
-
-    let info;
-    while ((info = enumerator.next_file(null)) !== null) {
-      const name = info.get_name();
-      const type = info.get_file_type();
-      if (type !== Gio.FileType.DIRECTORY) continue;
-      if (isSkippableDirName(name)) continue;
-
-      const child = file.get_child(name);
-
-      try {
-        if (isRelevantDir(child)) {
-          const p = child.get_path();
-          if (p)
-            projectsSet.add(p);
-          continue;
-        }
-      } catch { }
-
-      stack.push({ file: child, depth: depth + 1 });
-    }
-
-    try { enumerator.close(null); } catch { }
-  }
-
-  return [...projectsSet].sort((a, b) => a.localeCompare(b));
-}
-
-function _getProjectParts(projectPath) {
-  const projectName = GLib.path_get_basename(projectPath);
-  const parentPath = GLib.path_get_dirname(projectPath);
-  const parentName = GLib.path_get_basename(parentPath);
-  return { parentName, projectName };
-}
-
-function _getProjectDisplayLabel(projectPath) {
-  const { parentName, projectName } = _getProjectParts(projectPath);
-  return `${parentName}/${projectName}`;
-}
 
 export default class CodeLauncherPrefs extends ExtensionPreferences {
   fillPreferencesWindow(window) {
@@ -206,12 +114,23 @@ export default class CodeLauncherPrefs extends ExtensionPreferences {
     const projectRows = [];
 
     const setIgnored = (set) => {
-      settings.set_strv('ignored-projects', [...set]);
+      settings.set_strv('ignored-projects', normalizeIgnoredProjects(set));
     };
 
     const getIgnored = () => new Set((settings.get_strv('ignored-projects') ?? [])
       .map(s => String(s).trim())
       .filter(Boolean));
+    const setProjectHidden = (projectPath, hidden) => {
+      const ignored = getIgnored();
+      if (hidden)
+        ignored.add(projectPath);
+      else
+        ignored.delete(projectPath);
+
+      setIgnored(ignored);
+      rebuildProjectsList();
+    };
+
 
     const clearProjectsList = () => {
       for (const row of projectRows)
@@ -247,11 +166,11 @@ export default class CodeLauncherPrefs extends ExtensionPreferences {
 
       // Sort by friendly label
       const sorted = [...scannedProjects].sort((a, b) =>
-        _getProjectDisplayLabel(a).toLowerCase().localeCompare(_getProjectDisplayLabel(b).toLowerCase()));
+        getProjectDisplayLabel(a).toLowerCase().localeCompare(getProjectDisplayLabel(b).toLowerCase()));
 
       const ignored = getIgnored();
       for (const p of sorted) {
-        const label = _getProjectDisplayLabel(p);
+        const label = getProjectDisplayLabel(p);
         const row = new Adw.ActionRow({
           title: label,
           subtitle: p,
@@ -269,7 +188,7 @@ export default class CodeLauncherPrefs extends ExtensionPreferences {
         toggle.set_active(!ignored.has(p));
 
         toggle.connect('notify::active', () => {
-          this._setProjectHidden(p, !toggle.active);
+          setProjectHidden(p, !toggle.active);
         });
 
         row.add_suffix(toggle);
@@ -281,7 +200,10 @@ export default class CodeLauncherPrefs extends ExtensionPreferences {
     };
 
 
-    const doRescan = () => {
+        let scanGeneration = 0;
+    let scanCancellable = null;
+
+    const doRescan = async () => {
       const rootPath = settings.get_string('scan-directory');
       if (!rootPath || rootPath.trim() === '' || !GLib.file_test(rootPath, GLib.FileTest.IS_DIR)) {
         scannedProjects = [];
@@ -293,7 +215,13 @@ export default class CodeLauncherPrefs extends ExtensionPreferences {
       toolbarRow.set_subtitle('Scanning…');
 
       try {
-        scannedProjects = _scanForIdeaProjects(rootPath);
+                scanCancellable?.cancel();
+        const cancellable = createCancellable();
+        scanCancellable = cancellable;
+        const myGen = ++scanGeneration;
+
+        scannedProjects = await scanForIdeaProjectsAsync(rootPath, { cancellable });
+        if (myGen !== scanGeneration) return;
       } catch (e) {
         log(`[Code Launcher] prefs rescan failed: ${e}`);
         scannedProjects = [];
