@@ -7,17 +7,10 @@ import {
   shSingleQuote,
 } from './utils.js';
 
-/**
- * Launch a project via a JetBrains Toolbox script or PATH command.
- *
- * @param {string} projectPath
- * @param {string} ideKey
- * @param {(msg:string)=>void} notifyError
- */
 export function launchProject(projectPath, ideKey, notifyError) {
   const cmd = ideCmdForKey(ideKey);
+  const cmdPath = findInPath(cmd) ?? findToolboxScript(cmd);
 
-  const cmdPath = findToolboxScript(cmd) ?? findInPath(cmd);
   if (!cmdPath) {
     notifyError?.(`Could not find "${cmd}" in PATH or Toolbox scripts.`);
     return;

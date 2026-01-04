@@ -39,6 +39,15 @@ export const MARKERS = {
   pycharm: ['pyproject.toml', 'requirements.txt', 'setup.py', 'Pipfile', 'poetry.lock'],
 };
 
+// Toolbox script commands
+export const IDE_COMMANDS = {
+  webstorm: 'webstorm',
+  goland: 'goland',
+  rustrover: 'rustrover',
+  pycharm: 'pycharm',
+  intellij: 'idea',
+};
+
 export function joinPath(...parts) {
   return GLib.build_filenamev(parts);
 }
@@ -61,30 +70,17 @@ export function findToolboxScript(cmd) {
 }
 
 export function ideCmdForKey(ideKey) {
-  switch (ideKey) {
-    case 'goland': return 'goland';
-    case 'rustrover': return 'rustrover';
-    case 'pycharm': return 'pycharm';
-    case 'intellij': return 'idea';
-    case 'webstorm':
-    default:
-      return 'webstorm';
-  }
+  return IDE_COMMANDS[ideKey] ?? IDE_COMMANDS.intellij;
 }
 
 export function pickIdeForProject(projectPath) {
-  // Explicit marker
-  if (fileExists(joinPath(projectPath, '.idea', '.name')))
-    return 'intellij';
-
-  // Use markers
-  for (const [ide, files] of Object.entries(MARKERS)) {
-    for (const f of files) {
+  for (const [ide, markerFiles] of Object.entries(MARKERS)) {
+    for (const f of markerFiles) {
       if (fileExists(joinPath(projectPath, f)))
         return ide;
     }
   }
-  return 'webstorm';
+  return 'intellij';
 }
 
 export function getProjectParts(projectPath) {
@@ -114,8 +110,7 @@ export function getProjectDisplayMarkup(projectPath) {
 }
 
 export function getToolboxIdeIcon(ideKey) {
-  // Prefer Toolbox's product icons when present.
-  const appDir = TOOLBOX_APP_DIR[ideKey] ?? TOOLBOX_APP_DIR.webstorm;
+  const appDir = TOOLBOX_APP_DIR[ideKey] ?? TOOLBOX_APP_DIR.intellij;
   const baseName = ideKey === 'intellij' ? 'idea' : ideKey;
 
   const pngPath = joinPath(TOOLBOX_APPS_DIR, appDir, 'bin', `${baseName}.png`);
@@ -137,8 +132,8 @@ export function getMenuIconForProject(projectPath, ideKey) {
   return getToolboxIdeIcon(ideKey);
 }
 
+// Escape for single-quoted POSIX shell string.
 export function shSingleQuote(s) {
-  // Safe single-quote escaping for /bin/sh -lc
   return `'${String(s).replaceAll("'", `'"'"'`)}'`;
 }
 
@@ -159,15 +154,12 @@ export function isSkippableDirName(name) {
 }
 
 export function isRelevantDir(dirFile) {
-  // A project root is any directory containing one of these markers
   const markers = ['.idea', '.git', '.hg', '.svn'];
   for (const marker of markers) {
     try {
       if (dirFile.get_child(marker).query_exists(null))
         return true;
-    } catch {
-      // ignore permission/io errors
-    }
+    } catch { }
   }
   return false;
 }

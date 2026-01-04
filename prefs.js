@@ -3,11 +3,10 @@ import Gtk from 'gi://Gtk';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 
-import { ExtensionPreferences } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
+import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
-import { getProjectDisplayLabel, normalizeIgnoredProjects } from './utils.js';
-import { createCancellable, scanForIdeaProjectsAsync } from './scanner.js';
-
+import {getProjectDisplayLabel, normalizeIgnoredProjects} from './utils.js';
+import {createCancellable, scanForIdeaProjectsAsync} from './scanner.js';
 
 export default class CodeLauncherPrefs extends ExtensionPreferences {
   fillPreferencesWindow(window) {
@@ -32,7 +31,7 @@ export default class CodeLauncherPrefs extends ExtensionPreferences {
       subtitle: 'Root folder to scan recursively for .idea folders',
     });
 
-    const chooseBtn = new Gtk.Button({ label: 'Choose…' });
+    const chooseBtn = new Gtk.Button({label: 'Choose…'});
     dirRow.add_suffix(chooseBtn);
     dirRow.activatable_widget = chooseBtn;
 
@@ -200,7 +199,7 @@ export default class CodeLauncherPrefs extends ExtensionPreferences {
     };
 
 
-        let scanGeneration = 0;
+    let scanGeneration = 0;
     let scanCancellable = null;
 
     const doRescan = async () => {
@@ -215,12 +214,12 @@ export default class CodeLauncherPrefs extends ExtensionPreferences {
       toolbarRow.set_subtitle('Scanning…');
 
       try {
-                scanCancellable?.cancel();
+        scanCancellable?.cancel();
         const cancellable = createCancellable();
         scanCancellable = cancellable;
         const myGen = ++scanGeneration;
 
-        scannedProjects = await scanForIdeaProjectsAsync(rootPath, { cancellable });
+        scannedProjects = await scanForIdeaProjectsAsync(rootPath, {cancellable});
         if (myGen !== scanGeneration) return;
       } catch (e) {
         log(`[Code Launcher] prefs rescan failed: ${e}`);

@@ -276,7 +276,6 @@ const CodeLauncherIndicator = GObject.registerClass(
     }
 
     _refreshNow(fromManualClick) {
-      // fire-and-forget async; we guard stale results with generation
       this._refreshNowAsync(fromManualClick);
     }
 
@@ -298,15 +297,14 @@ const CodeLauncherIndicator = GObject.registerClass(
       }
 
       if (!fromManualClick && this._hasScannedOnce) {
+        // No deep scan, but rebuild (Option A recomputes icons/IDE each rebuild)
         this._rebuildProjectItems();
         return;
       }
 
-      // Cancel any in-flight scan
       this._scanCancellable?.cancel();
       const cancellable = createCancellable();
       this._scanCancellable = cancellable;
-
       const myGen = ++this._scanGeneration;
 
       this._showSingleDisabledLine('Scanning…');
@@ -316,16 +314,13 @@ const CodeLauncherIndicator = GObject.registerClass(
         projects = await scanForIdeaProjectsAsync(rootPath, {
           cancellable,
           onProgress: (count) => {
-            if (myGen !== this._scanGeneration)
-              return;
-            // light-touch progress; avoids rebuilding list constantly
+            if (myGen !== this._scanGeneration) return;
             if (count % 50 === 0)
               this._showSingleDisabledLine(`Scanning… (${count})`);
           },
         });
       } catch (e) {
-        if (myGen !== this._scanGeneration)
-          return;
+        if (myGen !== this._scanGeneration) return;
         log(`[Code Launcher] Scan failed: ${e}`);
         this._showSingleDisabledLine(`Scan failed: ${e}`);
         return;
@@ -334,17 +329,13 @@ const CodeLauncherIndicator = GObject.registerClass(
           this._scanCancellable = null;
       }
 
-      // Stale result guard
-      if (myGen !== this._scanGeneration)
-        return;
+      if (myGen !== this._scanGeneration) return;
 
       this._allProjects = projects;
       this._hasScannedOnce = true;
-
       this._rebuildProjectItems();
     }
   });
-
 export default class CodeLauncherExtension extends Extension {
   enable() {
     this._settings = this.getSettings();
