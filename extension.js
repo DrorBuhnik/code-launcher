@@ -9,18 +9,11 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
-import {
-  getMenuIconForProject,
-  getProjectDisplayLabel,
-  getProjectDisplayMarkup,
-  normalizeIgnoredProjects,
-  pickIdeForProject,
-} from './lib/utils.js';
+import {getAppInfo, getMenuIconForProject, getProjectDisplayLabel, getProjectDisplayMarkup, pickIdeForProject,} from './lib/utils.js';
 
 import {createCancellable, scanForIdeaProjectsAsync} from './lib/scanner.js';
-import {launchProject} from './lib/launcher.js';
 
-// About ~20 items visible. (Tweak if you want)
+// About ~20 items visible
 const LIST_MAX_HEIGHT_PX = 560;
 
 const CodeLauncherIndicator = GObject.registerClass(
@@ -68,7 +61,7 @@ const CodeLauncherIndicator = GObject.registerClass(
         this._rebuildProjectItems();
       });
 
-      // Auto-focus search bar when opening the menu
+      // Autofocus search bar when opening the menu
       this.menu.connect('open-state-changed', (_menu, isOpen) => {
         if (!isOpen)
           return;
@@ -78,13 +71,12 @@ const CodeLauncherIndicator = GObject.registerClass(
             this._searchEntry.grab_key_focus();
             this._searchEntry.clutter_text.set_selection(0, -1);
           } catch (e) {
-            log(`[Code Launcher] Failed to focus search entry: ${e}`);
+            console.error(`[Code Launcher] Failed to focus search entry: ${e}`);
           }
           return GLib.SOURCE_REMOVE;
         });
       });
 
-      // Scrollable projects list
       this._projectsSection = new PopupMenu.PopupMenuSection();
 
       this._scrollView = new St.ScrollView({
@@ -116,7 +108,7 @@ const CodeLauncherIndicator = GObject.registerClass(
             this._searchEntry.grab_key_focus();
             this._searchEntry.clutter_text.set_selection(0, -1);
           } catch (e) {
-            log(`[Code Launcher] Failed to refocus after rescan: ${e}`);
+            console.error(`[Code Launcher] Failed to refocus after rescan: ${e}`);
           }
           return GLib.SOURCE_REMOVE;
         });
@@ -128,12 +120,11 @@ const CodeLauncherIndicator = GObject.registerClass(
         try {
           this._extension.openPreferences();
         } catch (e) {
-          log(`[Code Launcher] openPreferences failed: ${e}`);
+          console.error(`[Code Launcher] openPreferences failed: ${e}`);
         }
       });
       this.menu.addMenuItem(openPrefsItem);
 
-      // Only rescan when scan-directory changes
       this._scanDirChangedId = this._settings.connect('changed::scan-directory', () => {
         this._allProjects = [];
         this._hasScannedOnce = false;
@@ -145,7 +136,6 @@ const CodeLauncherIndicator = GObject.registerClass(
         this._showNeedsRescan();
       });
 
-      // Only refresh list when ignored-projects changes
       this._ignoredChangedId = this._settings.connect('changed::ignored-projects', () => {
         this._rebuildProjectItems();
       });
@@ -169,25 +159,10 @@ const CodeLauncherIndicator = GObject.registerClass(
     _getIgnoredSet() {
       try {
         const arr = this._settings.get_strv('ignored-projects') ?? [];
-        return new Set(arr.map(s => String(s).trim()).filter(Boolean));
+        return new Set(arr.map(s => s.trim()).filter(Boolean));
       } catch {
         return new Set();
       }
-    }
-
-    _setIgnoredSet(set) {
-      try {
-        const arr = normalizeIgnoredProjects(set);
-        this._settings.set_strv('ignored-projects', arr);
-      } catch (e) {
-        log(`[Code Launcher] Failed to write ignored-projects (missing schema key?): ${e}`);
-      }
-    }
-
-    _ignoreProject(projectPath) {
-      const set = this._getIgnoredSet();
-      set.add(projectPath);
-      this._setIgnoredSet(set);
     }
 
     _showSingleDisabledLine(text) {
@@ -198,7 +173,7 @@ const CodeLauncherIndicator = GObject.registerClass(
     }
 
     _showNeedsRescan() {
-      this._showSingleDisabledLine('Directory changed — click “Rescan now”');
+      this._showSingleDisabledLine('Directory changed — click "Rescan now"');
     }
 
     _rebuildProjectItems() {
@@ -211,7 +186,7 @@ const CodeLauncherIndicator = GObject.registerClass(
       }
 
       if (!this._hasScannedOnce) {
-        this._showSingleDisabledLine('Click “Rescan now” to scan');
+        this._showSingleDisabledLine('Click "Rescan now" to scan');
         return;
       }
 
@@ -245,25 +220,27 @@ const CodeLauncherIndicator = GObject.registerClass(
 
         const menuItem = new PopupMenu.PopupImageMenuItem(plainLabel, icon);
 
-        // Style hook for hover CSS
         try {
           menuItem.actor.add_style_class_name('project-item');
           menuItem.actor.x_expand = true;
         } catch {
         }
 
-        // Apply markup to dim parent part
         try {
           menuItem.label.clutter_text.set_markup(markupLabel);
         } catch (e) {
           menuItem.label.set_text(plainLabel);
-          log(`[Code Launcher] Failed to set markup label: ${e}`);
+          console.error(`[Code Launcher] Failed to set markup label: ${e}`);
         }
 
-        // Launch on activate
         menuItem.closeOnActivate = true;
         menuItem.connect('activate', () => {
-          launchProject(projectPath, ideKey, (msg) => Main.notifyError('Code Launcher', msg));
+          try {
+            const app = getAppInfo(ideKey);
+            app.launch_uris([Gio.File.new_for_path(projectPath).get_uri()], null);
+          } catch (e) {
+            Main.notifyError('Code Launcher', `Failed to launch ${ideKey} for ${projectPath}: ${e}`);
+          }
           GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
             this.menu.close();
             return GLib.SOURCE_REMOVE;
@@ -275,7 +252,7 @@ const CodeLauncherIndicator = GObject.registerClass(
     }
 
     _refreshNow(fromManualClick) {
-      this._refreshNowAsync(fromManualClick);
+      this._refreshNowAsync(fromManualClick).then();
     }
 
     async _refreshNowAsync(fromManualClick) {
@@ -296,7 +273,6 @@ const CodeLauncherIndicator = GObject.registerClass(
       }
 
       if (!fromManualClick && this._hasScannedOnce) {
-        // No deep scan, but rebuild (Option A recomputes icons/IDE each rebuild)
         this._rebuildProjectItems();
         return;
       }
@@ -320,7 +296,7 @@ const CodeLauncherIndicator = GObject.registerClass(
         });
       } catch (e) {
         if (myGen !== this._scanGeneration) return;
-        log(`[Code Launcher] Scan failed: ${e}`);
+        console.error(`[Code Launcher] Scan failed: ${e}`);
         this._showSingleDisabledLine(`Scan failed: ${e}`);
         return;
       } finally {
@@ -335,18 +311,18 @@ const CodeLauncherIndicator = GObject.registerClass(
       this._rebuildProjectItems();
     }
   });
+
 export default class CodeLauncherExtension extends Extension {
   enable() {
     this._settings = this.getSettings();
 
-    // Load stylesheet.css (GNOME 49+ safe)
     this._stylesheetFile = Gio.File.new_for_path(`${this.path}/stylesheet.css`);
     try {
       St.ThemeContext.get_for_stage(global.stage)
         .get_theme()
         .load_stylesheet(this._stylesheetFile);
     } catch (e) {
-      log(`[Code Launcher] Failed to load stylesheet: ${e}`);
+      console.error(`[Code Launcher] Failed to load stylesheet: ${e}`);
     }
 
     const place = () => {
@@ -372,7 +348,7 @@ export default class CodeLauncherExtension extends Extension {
           .get_theme()
           .unload_stylesheet(this._stylesheetFile);
       } catch (e) {
-        log(`[Code Launcher] Failed to unload stylesheet: ${e}`);
+        console.error(`[Code Launcher] Failed to unload stylesheet: ${e}`);
       }
       this._stylesheetFile = null;
     }
