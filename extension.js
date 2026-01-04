@@ -17,8 +17,8 @@ import {
   pickIdeForProject,
 } from './lib/utils.js';
 
-import {createCancellable, scanForIdeaProjectsAsync} from './scanner.js';
-import {launchProject} from './launcher.js';
+import {createCancellable, scanForIdeaProjectsAsync} from './lib/scanner.js';
+import {launchProject} from './lib/launcher.js';
 
 // About ~20 items visible. (Tweak if you want)
 const LIST_MAX_HEIGHT_PX = 560;
