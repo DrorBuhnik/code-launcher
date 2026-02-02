@@ -243,6 +243,7 @@ const CodeLauncherIndicator = GObject.registerClass(
           }
           GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
             this.menu.close();
+            this._searchEntry.set_text(null);
             return GLib.SOURCE_REMOVE;
           });
         });
