@@ -2,7 +2,7 @@
   "uuid": "code-launcher@DrorBuhnik.github.com",
   "name": "Code Launcher",
   "description": "Gnome extension for IDE launcher for projects in directory. Based on Jetbrains Toolbox concept but with low resources and without tool management",
-  "shell-version": ["49"],
+  "shell-version": ["49", "50"],
   "settings-schema": "org.gnome.shell.extensions.code-launcher",
   "version": 1
 }
