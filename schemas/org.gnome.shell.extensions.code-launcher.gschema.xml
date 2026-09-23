@@ -21,5 +21,13 @@
             <description>Project paths that should be hidden from the menu (and can be managed in Settings).</description>
         </key>
 
+        <key name="collapsed-sections" type="as">
+            <default>[]</default>
+            <summary>Collapsed sections</summary>
+            <description>Parent directory paths whose section is collapsed in the popup. Sections not listed here are
+                expanded, so the popup reopens on the last used view.
+            </description>
+        </key>
+
     </schema>
 </schemalist>

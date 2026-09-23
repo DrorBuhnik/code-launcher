@@ -5,7 +5,7 @@ import GLib from 'gi://GLib';
 
 import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
-import {getProjectDisplayLabel, normalizeIgnoredProjects} from './lib/utils.js';
+import {getProjectDisplayLabel, normalizePathList} from './lib/utils.js';
 import {createCancellable, scanForIdeaProjectsAsync} from './lib/scanner.js';
 
 export default class CodeLauncherPrefs extends ExtensionPreferences {
@@ -94,7 +94,7 @@ export default class CodeLauncherPrefs extends ExtensionPreferences {
     const projectRows = [];
 
     const setIgnored = (set) => {
-      settings.set_strv('ignored-projects', normalizeIgnoredProjects(set));
+      settings.set_strv('ignored-projects', normalizePathList(set));
     };
 
     const getIgnored = () => new Set((settings.get_strv('ignored-projects') ?? [])

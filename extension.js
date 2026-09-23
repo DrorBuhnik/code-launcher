@@ -2,6 +2,7 @@ import St from 'gi://St';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
+import Clutter from 'gi://Clutter';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
@@ -9,12 +10,30 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
-import {getAppInfo, getMenuIconForProject, getProjectDisplayLabel, getProjectDisplayMarkup, pickIdeForProject,} from './lib/utils.js';
+import {
+  buildSectionTree,
+  escapeMarkup,
+  filterSectionTree,
+  getAppInfo,
+  getMenuIconForProject,
+  getProjectName,
+  normalizePathList,
+  pickIdeForProject,
+  relativeToRoot,
+} from './lib/utils.js';
 
 import {createCancellable, scanForIdeaProjectsAsync} from './lib/scanner.js';
 
 // About ~20 items visible
 const LIST_MAX_HEIGHT_PX = 560;
+
+const FALLBACK_ICON_NAME = 'applications-development-symbolic';
+
+// Left padding: how far one nesting level shifts a row, and where depth 0 sits.
+const INDENT_PX = 12;
+const BASE_PAD_PX = 8;
+// Projects clear the width of their header's chevron.
+const PROJECT_PAD_PX = 14;
 
 const CodeLauncherIndicator = GObject.registerClass(
   class CodeLauncherIndicator extends PanelMenu.Button {
@@ -27,6 +46,9 @@ const CodeLauncherIndicator = GObject.registerClass(
       this._hasScannedOnce = false;
       this._allProjects = [];
       this._searchText = '';
+
+      this._ideKeyCache = new Map();
+      this._missingIdeWarned = new Set();
 
       this._scanGeneration = 0;
       this._scanCancellable = null;
@@ -61,11 +83,15 @@ const CodeLauncherIndicator = GObject.registerClass(
         this._rebuildProjectItems();
       });
 
-      // Autofocus search bar when opening the menu
       this.menu.connect('open-state-changed', (_menu, isOpen) => {
-        if (!isOpen)
+        if (!isOpen) {
+          // Drop the search so the next open comes back to the saved section view.
+          if (this._searchEntry.get_text() !== '')
+            this._searchEntry.set_text('');
           return;
+        }
 
+        // Autofocus search bar when opening the menu
         GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
           try {
             this._searchEntry.grab_key_focus();
@@ -129,6 +155,7 @@ const CodeLauncherIndicator = GObject.registerClass(
         this._allProjects = [];
         this._hasScannedOnce = false;
         this._searchText = '';
+        this._ideKeyCache.clear();
 
         this._scanGeneration = 0;
         this._scanCancellable = null;
@@ -156,13 +183,21 @@ const CodeLauncherIndicator = GObject.registerClass(
       super.destroy();
     }
 
-    _getIgnoredSet() {
+    _getStrvSet(key) {
       try {
-        const arr = this._settings.get_strv('ignored-projects') ?? [];
+        const arr = this._settings.get_strv(key) ?? [];
         return new Set(arr.map(s => s.trim()).filter(Boolean));
       } catch {
         return new Set();
       }
+    }
+
+    _getIgnoredSet() {
+      return this._getStrvSet('ignored-projects');
+    }
+
+    _getCollapsedSet() {
+      return this._getStrvSet('collapsed-sections');
     }
 
     _showSingleDisabledLine(text) {
@@ -176,7 +211,25 @@ const CodeLauncherIndicator = GObject.registerClass(
       this._showSingleDisabledLine('Directory changed — click "Rescan now"');
     }
 
-    _rebuildProjectItems() {
+    // Collapsing a section keeps you where you were; changing what the list
+    // contains puts you back at the top.
+    _rebuildProjectItems({keepScroll = false} = {}) {
+      let scroll = 0;
+      try {
+        scroll = keepScroll ? this._scrollView.vadjustment?.value ?? 0 : 0;
+      } catch {
+      }
+
+      this._buildProjectItems();
+
+      try {
+        this._scrollView.vadjustment?.set_value(scroll);
+      } catch (e) {
+        console.error(`[Code Launcher] Failed to restore scroll position: ${e}`);
+      }
+    }
+
+    _buildProjectItems() {
       this._projectsSection.removeAll();
 
       const rootPath = this._settings.get_string('scan-directory');
@@ -198,58 +251,152 @@ const CodeLauncherIndicator = GObject.registerClass(
         return;
       }
 
-      const q = this._searchText;
-      const filtered = q
-        ? visibleProjects.filter(p => {
-          const label = getProjectDisplayLabel(p).toLowerCase();
-          return label.includes(q) || p.toLowerCase().includes(q);
-        })
-        : visibleProjects;
+      const root = rootPath.trim();
+      const query = this._searchText;
 
-      if (filtered.length === 0) {
-        this._showSingleDisabledLine('No matches');
-        return;
+      let tree = buildSectionTree(visibleProjects, root);
+
+      if (query) {
+        // Matching the path relative to the scan root means typing a section
+        // name pulls up everything beneath it, without the root's own
+        // directories ever counting as a match.
+        tree = filterSectionTree(tree,
+          p => relativeToRoot(p, root).toLowerCase().includes(query));
+
+        if (!tree) {
+          this._showSingleDisabledLine('No matches');
+          return;
+        }
       }
 
-      for (const projectPath of filtered) {
-        const ideKey = pickIdeForProject(projectPath);
-        const icon = getMenuIconForProject(projectPath, ideKey);
+      this._addTreeItems(tree, {query, collapsed: this._getCollapsedSet()});
+    }
 
-        const plainLabel = getProjectDisplayLabel(projectPath);
-        const markupLabel = getProjectDisplayMarkup(projectPath);
+    _addTreeItems(node, ctx) {
+      for (const projectPath of node.projects)
+        this._projectsSection.addMenuItem(this._createProjectItem(projectPath, node.depth + 1));
 
-        const menuItem = new PopupMenu.PopupImageMenuItem(plainLabel, icon);
+      for (const child of node.children) {
+        // Searching always expands what survived the filter; otherwise the
+        // saved open/closed view is restored.
+        const isCollapsed = !ctx.query && ctx.collapsed.has(child.key);
 
+        this._projectsSection.addMenuItem(
+          this._createSectionHeader(child, isCollapsed, !ctx.query));
+
+        if (!isCollapsed)
+          this._addTreeItems(child, ctx);
+      }
+    }
+
+    // A plain header rather than a PopupSubMenuMenuItem: that widget wraps its
+    // children in a second St.ScrollView nested inside ours and paints them on
+    // the theme's .popup-sub-menu background.
+    _createSectionHeader(node, isCollapsed, isToggleable) {
+      const header = new PopupMenu.PopupBaseMenuItem({
+        reactive: isToggleable,
+        can_focus: isToggleable,
+        style_class: 'section-header',
+      });
+      header.style = `padding-left: ${BASE_PAD_PX + node.depth * INDENT_PX}px;`;
+
+      const arrow = new St.Icon({
+        icon_name: isCollapsed ? 'pan-end-symbolic' : 'pan-down-symbolic',
+        style_class: 'section-arrow',
+        y_align: Clutter.ActorAlign.CENTER,
+      });
+      header.add_child(arrow);
+
+      const label = new St.Label({
+        y_expand: true,
+        y_align: Clutter.ActorAlign.CENTER,
+      });
+
+      try {
+        // noinspection HtmlUnknownAttribute
+        label.clutter_text.set_markup(
+          `<span alpha="60%">${escapeMarkup(node.label)}</span> <span alpha="35%">${node.total}</span>`);
+      } catch (e) {
+        label.set_text(`${node.label} ${node.total}`);
+        console.error(`[Code Launcher] Failed to set section markup: ${e}`);
+      }
+
+      header.add_child(label);
+      header.label_actor = label;
+
+      if (isToggleable) {
+        header.closeOnActivate = false;
+        header.connect('activate', () => this._toggleSection(node.key));
+      }
+
+      return header;
+    }
+
+    _createProjectItem(projectPath, depth) {
+      const ideKey = this._getIdeKey(projectPath);
+
+      const menuItem = new PopupMenu.PopupImageMenuItem(
+        getProjectName(projectPath), this._getIcon(projectPath, ideKey));
+
+      menuItem.add_style_class_name('project-item');
+      menuItem.style = `padding-left: ${BASE_PAD_PX + depth * INDENT_PX + PROJECT_PAD_PX}px;`;
+      menuItem.x_expand = true;
+      menuItem.closeOnActivate = true;
+
+      menuItem.connect('activate', () => {
         try {
-          menuItem.actor.add_style_class_name('project-item');
-          menuItem.actor.x_expand = true;
-        } catch {
-        }
-
-        try {
-          menuItem.label.clutter_text.set_markup(markupLabel);
+          const app = getAppInfo(ideKey);
+          app.launch_uris([Gio.File.new_for_path(projectPath).get_uri()], null);
         } catch (e) {
-          menuItem.label.set_text(plainLabel);
-          console.error(`[Code Launcher] Failed to set markup label: ${e}`);
+          Main.notifyError('Code Launcher', `Failed to launch ${ideKey} for ${projectPath}: ${e}`);
         }
-
-        menuItem.closeOnActivate = true;
-        menuItem.connect('activate', () => {
-          try {
-            const app = getAppInfo(ideKey);
-            app.launch_uris([Gio.File.new_for_path(projectPath).get_uri()], null);
-          } catch (e) {
-            Main.notifyError('Code Launcher', `Failed to launch ${ideKey} for ${projectPath}: ${e}`);
-          }
-          GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
-            this.menu.close();
-            this._searchEntry.set_text(null);
-            return GLib.SOURCE_REMOVE;
-          });
+        GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+          this.menu.close();
+          return GLib.SOURCE_REMOVE;
         });
+      });
 
-        this._projectsSection.addMenuItem(menuItem);
+      return menuItem;
+    }
+
+    // Picking the IDE stats the project for marker files, and the list is
+    // rebuilt on every keystroke while searching, so memoise the answer.
+    _getIdeKey(projectPath) {
+      let ideKey = this._ideKeyCache.get(projectPath);
+
+      if (ideKey === undefined) {
+        ideKey = pickIdeForProject(projectPath);
+        this._ideKeyCache.set(projectPath, ideKey);
       }
+
+      return ideKey;
+    }
+
+    // Resolved fresh every time on purpose: get_icon() hands back a borrowed
+    // reference owned by the DesktopAppInfo, so a cached GIcon can outlive its
+    // owner. Only the failure path falls back to a generic icon — that keeps a
+    // single uninstalled IDE from taking down the whole menu.
+    _getIcon(projectPath, ideKey) {
+      try {
+        return getMenuIconForProject(projectPath, ideKey);
+      } catch (e) {
+        if (!this._missingIdeWarned.has(ideKey)) {
+          this._missingIdeWarned.add(ideKey);
+          console.error(`[Code Launcher] No icon for ${ideKey}: ${e}`);
+        }
+        return FALLBACK_ICON_NAME;
+      }
+    }
+
+    // Only ever reached from a click or Enter on a header, so the saved view
+    // can never be clobbered by a rebuild or by the shell tearing the menu down.
+    _toggleSection(sectionKey) {
+      const collapsed = this._getCollapsedSet();
+      if (!collapsed.delete(sectionKey))
+        collapsed.add(sectionKey);
+
+      this._settings.set_strv('collapsed-sections', normalizePathList(collapsed));
+      this._rebuildProjectItems({keepScroll: true});
     }
 
     _refreshNow(fromManualClick) {
@@ -309,6 +456,7 @@ const CodeLauncherIndicator = GObject.registerClass(
 
       this._allProjects = projects;
       this._hasScannedOnce = true;
+      this._ideKeyCache.clear();
       this._rebuildProjectItems();
     }
   });

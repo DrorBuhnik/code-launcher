@@ -1,3 +1,22 @@
+/* Sections are structure, not content — the projects should carry the weight.
+   Extra padding above each header does the visual grouping instead of a
+   background, which would compete with the item rows. */
+.section-header {
+    padding: 9px 8px 3px 8px;
+    font-size: 0.85em;
+}
+
+.section-header:hover {
+    background-color: rgba(255, 255, 255, 0.04);
+    border-radius: 6px;
+}
+
+.section-arrow {
+    icon-size: 10px;
+    padding-right: 6px;
+}
+
+/* padding-left is set per row in JS — it depends on nesting depth. */
 .project-item {
     padding: 6px 8px;
 }
